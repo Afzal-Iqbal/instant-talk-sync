@@ -1,13 +1,19 @@
 import { createContext, useContext, useEffect, useState, ReactNode } from 'react';
-import { User, onAuthStateChanged, signInWithEmailAndPassword, createUserWithEmailAndPassword, signOut, updateProfile } from 'firebase/auth';
-import { auth } from '@/config/firebase';
+import * as api from '@/services/api';
+
+export interface User {
+  _id: string;
+  email: string;
+  displayName: string;
+  token: string;
+}
 
 interface AuthContextType {
   currentUser: User | null;
   loading: boolean;
   login: (email: string, password: string) => Promise<void>;
   signup: (email: string, password: string, displayName: string) => Promise<void>;
-  logout: () => Promise<void>;
+  logout: () => void;
 }
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
@@ -25,27 +31,31 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    const unsubscribe = onAuthStateChanged(auth, (user) => {
-      setCurrentUser(user);
-      setLoading(false);
-    });
-
-    return unsubscribe;
+    // Check for stored user on mount
+    const storedUser = localStorage.getItem('user');
+    if (storedUser) {
+      setCurrentUser(JSON.parse(storedUser));
+    }
+    setLoading(false);
   }, []);
 
   const signup = async (email: string, password: string, displayName: string) => {
-    const userCredential = await createUserWithEmailAndPassword(auth, email, password);
-    if (userCredential.user) {
-      await updateProfile(userCredential.user, { displayName });
-    }
+    const response = await api.signup({ email, password, displayName });
+    const user = { ...response.user, token: response.token };
+    setCurrentUser(user);
+    localStorage.setItem('user', JSON.stringify(user));
   };
 
   const login = async (email: string, password: string) => {
-    await signInWithEmailAndPassword(auth, email, password);
+    const response = await api.login({ email, password });
+    const user = { ...response.user, token: response.token };
+    setCurrentUser(user);
+    localStorage.setItem('user', JSON.stringify(user));
   };
 
-  const logout = async () => {
-    await signOut(auth);
+  const logout = () => {
+    setCurrentUser(null);
+    localStorage.removeItem('user');
   };
 
   const value = {
