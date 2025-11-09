@@ -1,20 +1,20 @@
 import { useState, useEffect, useRef } from 'react';
 import { useAuth } from '@/contexts/AuthContext';
-import { db } from '@/config/firebase';
-import { collection, addDoc, query, orderBy, onSnapshot, serverTimestamp, Timestamp } from 'firebase/firestore';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Avatar, AvatarFallback } from '@/components/ui/avatar';
 import { LogOut, Send } from 'lucide-react';
 import { useToast } from '@/hooks/use-toast';
+import { io, Socket } from 'socket.io-client';
+import { SOCKET_URL } from '@/config/api';
 
 interface Message {
-  id: string;
+  _id: string;
   text: string;
   userId: string;
   userName: string;
-  timestamp: Timestamp;
+  timestamp: string;
 }
 
 const Chat = () => {
@@ -22,22 +22,48 @@ const Chat = () => {
   const [messages, setMessages] = useState<Message[]>([]);
   const [newMessage, setNewMessage] = useState('');
   const [loading, setLoading] = useState(false);
+  const [socket, setSocket] = useState<Socket | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const { toast } = useToast();
 
+  // Initialize Socket.IO connection
   useEffect(() => {
-    const q = query(collection(db, 'messages'), orderBy('timestamp', 'asc'));
-    
-    const unsubscribe = onSnapshot(q, (snapshot) => {
-      const messagesData: Message[] = [];
-      snapshot.forEach((doc) => {
-        messagesData.push({ id: doc.id, ...doc.data() } as Message);
-      });
-      setMessages(messagesData);
+    if (!currentUser) return;
+
+    const newSocket = io(SOCKET_URL, {
+      auth: {
+        token: currentUser.token,
+      },
     });
 
-    return unsubscribe;
-  }, []);
+    newSocket.on('connect', () => {
+      console.log('Connected to server');
+    });
+
+    // Listen for previous messages
+    newSocket.on('previousMessages', (msgs: Message[]) => {
+      setMessages(msgs);
+    });
+
+    // Listen for new messages
+    newSocket.on('newMessage', (message: Message) => {
+      setMessages((prev) => [...prev, message]);
+    });
+
+    newSocket.on('error', (error: string) => {
+      toast({
+        title: 'Error',
+        description: error,
+        variant: 'destructive',
+      });
+    });
+
+    setSocket(newSocket);
+
+    return () => {
+      newSocket.close();
+    };
+  }, [currentUser, toast]);
 
   useEffect(() => {
     if (scrollRef.current) {
@@ -47,39 +73,24 @@ const Chat = () => {
 
   const handleSendMessage = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!newMessage.trim() || !currentUser) return;
+    if (!newMessage.trim() || !socket || !currentUser) return;
 
     setLoading(true);
-    try {
-      await addDoc(collection(db, 'messages'), {
-        text: newMessage,
-        userId: currentUser.uid,
-        userName: currentUser.displayName || 'Anonymous',
-        timestamp: serverTimestamp(),
-      });
-      setNewMessage('');
-    } catch (error: any) {
-      toast({
-        title: 'Error',
-        description: 'Failed to send message',
-        variant: 'destructive',
-      });
-    } finally {
-      setLoading(false);
-    }
+    
+    // Emit message through Socket.IO
+    socket.emit('sendMessage', {
+      text: newMessage,
+      userId: currentUser._id,
+      userName: currentUser.displayName,
+    });
+
+    setNewMessage('');
+    setLoading(false);
   };
 
-  const handleLogout = async () => {
-    try {
-      await logout();
-      toast({ title: 'Logged out', description: 'See you next time!' });
-    } catch (error: any) {
-      toast({
-        title: 'Error',
-        description: 'Failed to log out',
-        variant: 'destructive',
-      });
-    }
+  const handleLogout = () => {
+    logout();
+    toast({ title: 'Logged out', description: 'See you next time!' });
   };
 
   const getInitials = (name: string) => {
@@ -112,10 +123,10 @@ const Chat = () => {
       <ScrollArea className="flex-1 px-4">
         <div className="mx-auto max-w-4xl space-y-4 py-4">
           {messages.map((message) => {
-            const isCurrentUser = message.userId === currentUser?.uid;
+            const isCurrentUser = message.userId === currentUser?._id;
             return (
               <div
-                key={message.id}
+                key={message._id}
                 className={`flex items-start gap-3 ${
                   isCurrentUser ? 'flex-row-reverse' : 'flex-row'
                 }`}
@@ -144,7 +155,7 @@ const Chat = () => {
                   </div>
                   {message.timestamp && (
                     <div className="mt-1 text-xs text-muted-foreground">
-                      {message.timestamp.toDate().toLocaleTimeString([], {
+                      {new Date(message.timestamp).toLocaleTimeString([], {
                         hour: '2-digit',
                         minute: '2-digit',
                       })}
